@@ -1,0 +1,27 @@
+# Setup dirs
+mkdir -p fuzz_data/make_check/processed
+mkdir -p fuzz_data/make_check/raw
+mkdir fuzzings
+mkdir fuzz_data_tmp
+
+# Check for file input (just use the host system for this
+./check_file_input.sh coreutil.targets ./fuzz_data/make_check/processed
+
+# build the docker container
+sudo docker build . -t coreutils_argenv_fuzz
+
+# Use coreutils testsuite to generate initial input corpus
+sudo docker run --rm -e FUZZ_OUTPUT_BASE=/fuzz_data/make_check/raw -v $PWD/fuzz_data:/fuzz_data -t coreutils_argenv_fuzz:latest /bin/bash -c "git config --global --add safe.directory /coreutils_src && cd /coreutils_src/obj-preload && make check"
+
+# Parse dumped data (on the host) (I recommend to remove the fuzzi_ls_* files from fuzz_data/make_check/raw)
+for i in $(ls fuzz_data/make_check/raw | awk -F_ '{print $2}' | sort | uniq); do echo $i; mkdir fuzz_data/make_check/processed/$i;  python3 prep_env.py -i $(find fuzz_data/make_check/raw -type f -name "fuzzi_$i*\.arg" | xargs) -e $(find fuzz_data/make_check/raw -type f -name "fuzzi_$i*\.env" | xargs) -o fuzz_data/make_check/processed/$i > fuzz_data/make_check/processed/$i.envmeta ; done
+
+# Minimize Fuzzing corpus
+# Note this might take some time (you can change the -t 1000 timeout value in the run_cmin script)
+sudo docker run --rm  -v $PWD:/xxx -t coreutils_argenv_fuzz:latest /bin/bash -c "python3 /xxx/run_cmin.py -t /xxx/xx.targ -i /xxx/fuzz_data/make_check/processed -e /xxx/fuzz_data/make_check/processed -f /xxx/fuzzings -nt 1 --tdir /coreutils_afpp/bin/"
+
+# Start the fuzzer
+# Note: better to start each target in a separate container because this will break stuff
+#sudo docker run --rm  -v $PWD:/xxx -t coreutils_argenv_fuzz:latest /bin/bash -c "python3 /xxx/run_fuzzer.py -t date -e /xxx/fuzz_data/make_check/processed -f /xxx/fuzzings -nt 4 --tdir /coreutils_afpp/bin/ --lafdir /coreutils_afpp_laf/bin --rqdir /coreutils_afpp_rq/bin -x 60"
+while read i; do echo $i; cp ./fuzz_data/make_check/processed/"$i".fileinput fuzz_data_tmp; cp fuzz_data/make_check/processed/"$i".envmeta fuzz_data_tmp; cp run_fuzzer.py scripts/; docker run --rm -e FUZZ_TARGET=$i -v $PWD/fuzz_data_tmp:/fuzz_data -v $PWD/scripts:/scripts -v $PWD/fuzzings/$i:/fuzzings/$i -t coreutils_argenv_fuzz:latest /bin/bash -c 'python3 /scripts/run_fuzzer.py -t "$FUZZ_TARGET" -e /fuzz_data -f /fuzzings -nt 16 --tdir /coreutils_afpp/bin/ --lafdir /coreutils_afpp_laf/bin --rqdir /coreutils_afpp_rq/bin -x 2700'; done < coreutil.targets
+
